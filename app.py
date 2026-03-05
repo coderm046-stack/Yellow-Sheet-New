@@ -116,10 +116,13 @@ def detect_student_subjects(faculty, df_row, cfg):
 def build_exam_pdf(school_name, faculty_name, exam_label, student_results,
                    cfg, pos_cols, selected_exam_data):
     """
-    Landscape A4, 2 result slips side by side per page.
-    Each slip is ~135mm wide — large, readable fonts suitable for printing.
+    Landscape A4.  2 slips per page drawn directly with canvas so each slip
+    fills the FULL page height — no empty space at the bottom.
+    Signature line is always pinned to the very bottom of the slip.
     """
     from reportlab.lib.pagesizes import landscape
+    from reportlab.pdfgen         import canvas as rl_canvas
+    from reportlab.platypus       import Frame, KeepInFrame
 
     exam_meta = {
         "FIRST UNIT TEST (25)":  {"max_per_sub": 25,  "pass_mark": 9,  "total_max": 150},
@@ -127,46 +130,53 @@ def build_exam_pdf(school_name, faculty_name, exam_label, student_results,
         "SECOND UNIT TEST (25)": {"max_per_sub": 25,  "pass_mark": 9,  "total_max": 150},
         "ANNUAL EXAM (70/80)":   {"max_per_sub": None,"pass_mark": 28, "total_max": None},
     }
-    meta = exam_meta.get(exam_label, {"max_per_sub": None, "pass_mark": None, "total_max": None})
+    meta = exam_meta.get(exam_label,
+                         {"max_per_sub": None, "pass_mark": None, "total_max": None})
 
-    PAGE      = landscape(A4)           # 297mm × 210mm
-    L_MARGIN  = 8*mm
-    R_MARGIN  = 8*mm
-    T_MARGIN  = 8*mm
-    B_MARGIN  = 8*mm
-    USABLE_W  = PAGE[0] - L_MARGIN - R_MARGIN   # ~281mm
-    SLIP_W    = USABLE_W / 2                     # ~140mm each
-    DIVIDER   = 4*mm                             # gap between slips
+    # Clean display title printed on every slip header
+    exam_display_title = {
+        "FIRST UNIT TEST (25)":  "FIRST UNIT TEST RESULT",
+        "FIRST TERM EXAM (50)":  "FIRST TERM EXAM RESULT",
+        "SECOND UNIT TEST (25)": "SECOND UNIT TEST RESULT",
+        "ANNUAL EXAM (70/80)":   "ANNUAL EXAM RESULT",
+    }.get(exam_label, exam_label)
 
-    buf = BytesIO()
-    doc = SimpleDocTemplate(
-        buf, pagesize=PAGE,
-        leftMargin=L_MARGIN, rightMargin=R_MARGIN,
-        topMargin=T_MARGIN,  bottomMargin=B_MARGIN,
-    )
+    PAGE     = landscape(A4)          # (841.9, 595.3) points  ≈ 297×210 mm
+    PW, PH   = PAGE
+    MARGIN   = 10 * mm
+    GAP      = 6  * mm               # divider gap between the two slips
+    SLIP_W   = (PW - 2*MARGIN - GAP) / 2
+    SLIP_H   = PH - 2*MARGIN         # FULL usable height
 
-    # ── Styles (larger since landscape gives us room) ─────────────────────────
-    school_style = ParagraphStyle("sch", fontSize=16, fontName="Helvetica-Bold",
-                                  alignment=TA_CENTER, spaceAfter=2,
+    # Row heights for the marks table — tall rows for readability
+    ROW_H    = 9 * mm
+
+    # ── Styles ────────────────────────────────────────────────────────────────
+    school_style = ParagraphStyle("sch", fontSize=17, fontName="Helvetica-Bold",
+                                  alignment=TA_CENTER, spaceAfter=1,
                                   textColor=colors.Color(0.12, 0.31, 0.49))
-    exam_style   = ParagraphStyle("exm", fontSize=12, fontName="Helvetica-Bold",
-                                  alignment=TA_CENTER, spaceAfter=2,
-                                  textColor=colors.Color(0.8, 0.2, 0.0))
-    fac_style    = ParagraphStyle("fac", fontSize=10, fontName="Helvetica",
-                                  alignment=TA_CENTER, spaceAfter=3)
-    lbl_style    = ParagraphStyle("lbl", fontSize=10, fontName="Helvetica-Bold")
-    val_style    = ParagraphStyle("val", fontSize=10, fontName="Helvetica")
-    res_pass     = ParagraphStyle("rp",  fontSize=14, fontName="Helvetica-Bold",
-                                  textColor=colors.green, alignment=TA_CENTER)
-    res_fail     = ParagraphStyle("rf",  fontSize=14, fontName="Helvetica-Bold",
-                                  textColor=colors.red,   alignment=TA_CENTER)
+    exam_style   = ParagraphStyle("exm", fontSize=13, fontName="Helvetica-Bold",
+                                  alignment=TA_CENTER, spaceAfter=1,
+                                  textColor=colors.Color(0.75, 0.15, 0.0))
+    fac_style    = ParagraphStyle("fac", fontSize=11, fontName="Helvetica",
+                                  alignment=TA_CENTER, spaceAfter=4)
+    lbl_style    = ParagraphStyle("lbl", fontSize=11, fontName="Helvetica-Bold")
+    val_style    = ParagraphStyle("val", fontSize=11, fontName="Helvetica")
+    res_pass     = ParagraphStyle("rp",  fontSize=16, fontName="Helvetica-Bold",
+                                  textColor=colors.Color(0.05,0.55,0.05),
+                                  alignment=TA_CENTER)
+    res_fail     = ParagraphStyle("rf",  fontSize=16, fontName="Helvetica-Bold",
+                                  textColor=colors.Color(0.8,0.1,0.1),
+                                  alignment=TA_CENTER)
+    sig_style    = ParagraphStyle("sg",  fontSize=10, fontName="Helvetica",
+                                  alignment=TA_CENTER)
 
-    # Subject col, Max col, Marks col widths inside each slip
     S_COL = SLIP_W * 0.52
     M_COL = SLIP_W * 0.24
     O_COL = SLIP_W * 0.24
 
-    def make_slip(sr):
+    def slip_content(sr):
+        """Return (top_elems, result_text, is_pass) — signature drawn separately."""
         roll   = sr["roll"]
         name   = sr["name"]
         subj_6 = sr["subj_6"]
@@ -174,32 +184,34 @@ def build_exam_pdf(school_name, faculty_name, exam_label, student_results,
         is_ann = (exam_label == "ANNUAL EXAM (70/80)")
         elems  = []
 
-        # Header
-        elems.append(Paragraph(school_name, school_style))
-        elems.append(Paragraph(exam_label,  exam_style))
-        elems.append(Paragraph(f"{faculty_name} Faculty", fac_style))
-        elems.append(HRFlowable(width="100%", thickness=1.5,
-                                color=colors.Color(0.12, 0.31, 0.49)))
+        # ── Header block ──────────────────────────────────────────────────────
         elems.append(Spacer(1, 3*mm))
+        elems.append(Paragraph(school_name, school_style))
+        elems.append(Paragraph(exam_display_title, exam_style))
+        elems.append(Paragraph(f"{faculty_name} Faculty", fac_style))
+        elems.append(HRFlowable(width="100%", thickness=2,
+                                color=colors.Color(0.12, 0.31, 0.49),
+                                spaceAfter=4*mm))
 
-        # Roll / Name row
+        # ── Roll / Name ───────────────────────────────────────────────────────
         info = Table(
-            [[Paragraph("Roll No. :", lbl_style), Paragraph(str(roll), val_style),
-              Paragraph("Name :", lbl_style),      Paragraph(str(name), val_style)]],
-            colWidths=[SLIP_W*0.18, SLIP_W*0.18, SLIP_W*0.14, SLIP_W*0.50],
+            [[Paragraph("Roll No. :", lbl_style),
+              Paragraph(str(roll), val_style),
+              Paragraph("Name :", lbl_style),
+              Paragraph(str(name), val_style)]],
+            colWidths=[SLIP_W*0.17, SLIP_W*0.17, SLIP_W*0.13, SLIP_W*0.53],
         )
         info.setStyle(TableStyle([
-            ("BOTTOMPADDING", (0,0),(-1,-1), 3),
-            ("TOPPADDING",    (0,0),(-1,-1), 3),
-            ("FONTSIZE",      (0,0),(-1,-1), 10),
+            ("BOTTOMPADDING", (0,0),(-1,-1), 5),
+            ("TOPPADDING",    (0,0),(-1,-1), 5),
         ]))
         elems.append(info)
-        elems.append(Spacer(1, 3*mm))
+        elems.append(Spacer(1, 4*mm))
 
-        # Marks table
-        tbl_data      = [["Subject", "Max Marks", "Obtained"]]
-        total_obt     = 0
-        total_max_val = 0
+        # ── Marks table ───────────────────────────────────────────────────────
+        tbl_data  = [["Subject", "Max Marks", "Obtained"]]
+        total_obt = 0
+        total_max = 0
 
         for abbr in subj_6:
             subj_name, ann_max, _ = cfg["subjects"][abbr]
@@ -210,41 +222,50 @@ def build_exam_pdf(school_name, faculty_name, exam_label, student_results,
             except:
                 obt = str(raw)
             if isinstance(obt, int):
-                total_obt     += obt
-                total_max_val += max_m
+                total_obt += obt
+                total_max += max_m
             tbl_data.append([subj_name, str(max_m), str(obt)])
 
-        tbl_data.append(["TOTAL", str(total_max_val),
+        tbl_data.append(["TOTAL", str(total_max),
                           str(total_obt) if isinstance(total_obt, int) else "-"])
-        pct = round(total_obt / total_max_val * 100, 2) \
-              if isinstance(total_obt, int) and total_max_val else "-"
-        tbl_data.append(["Percentage", "", f"{pct} %" if pct != "-" else "-"])
+        pct = round(total_obt / total_max * 100, 2) \
+              if isinstance(total_obt, int) and total_max else "-"
+        tbl_data.append(["Percentage", "",
+                          f"{pct} %" if pct != "-" else "-"])
 
-        n_rows = len(tbl_data)
-        marks_tbl = Table(tbl_data, colWidths=[S_COL, M_COL, O_COL])
+        n_rows   = len(tbl_data)
+        row_heights = [ROW_H] * n_rows          # uniform tall rows
+        marks_tbl = Table(tbl_data,
+                          colWidths=[S_COL, M_COL, O_COL],
+                          rowHeights=row_heights)
         marks_tbl.setStyle(TableStyle([
-            ("BACKGROUND",    (0,0), (-1,0),    colors.Color(0.12,0.31,0.49)),
-            ("TEXTCOLOR",     (0,0), (-1,0),    colors.white),
-            ("FONTNAME",      (0,0), (-1,0),    "Helvetica-Bold"),
-            ("FONTSIZE",      (0,0), (-1,-1),   10),
-            ("ALIGN",         (1,0), (-1,-1),   "CENTER"),
-            ("ALIGN",         (0,0), (0,-1),    "LEFT"),
-            ("ROWBACKGROUNDS",(0,1), (-1,n_rows-3),
+            # Header
+            ("BACKGROUND",    (0,0),(-1,0),    colors.Color(0.12,0.31,0.49)),
+            ("TEXTCOLOR",     (0,0),(-1,0),    colors.white),
+            ("FONTNAME",      (0,0),(-1,0),    "Helvetica-Bold"),
+            ("FONTSIZE",      (0,0),(-1,-1),   11),
+            ("ALIGN",         (1,0),(-1,-1),   "CENTER"),
+            ("ALIGN",         (0,0),(0,-1),    "LEFT"),
+            ("VALIGN",        (0,0),(-1,-1),   "MIDDLE"),
+            # Alternating subject rows
+            ("ROWBACKGROUNDS",(0,1),(-1,n_rows-3),
                               [colors.white, colors.Color(0.94,0.96,0.99)]),
-            ("BACKGROUND",    (0,-2),(-1,-2),   colors.Color(0.82,0.82,0.82)),
-            ("FONTNAME",      (0,-2),(-1,-2),   "Helvetica-Bold"),
-            ("BACKGROUND",    (0,-1),(-1,-1),   colors.Color(0.94,0.96,0.99)),
+            # Total row
+            ("BACKGROUND",    (0,-2),(-1,-2),  colors.Color(0.80,0.80,0.80)),
+            ("FONTNAME",      (0,-2),(-1,-2),  "Helvetica-Bold"),
+            # Percentage row
+            ("BACKGROUND",    (0,-1),(-1,-1),  colors.Color(0.88,0.92,0.97)),
             ("SPAN",          (0,-1),(1,-1)),
-            ("FONTNAME",      (0,-1),(-1,-1),   "Helvetica-Bold"),
-            ("GRID",          (0,0), (-1,-1),   0.5, colors.grey),
-            ("BOTTOMPADDING", (0,0), (-1,-1),   4),
-            ("TOPPADDING",    (0,0), (-1,-1),   4),
-            ("LEFTPADDING",   (0,0), (-1,-1),   4),
+            ("FONTNAME",      (0,-1),(-1,-1),  "Helvetica-Bold"),
+            # Grid
+            ("GRID",          (0,0),(-1,-1),   0.6, colors.grey),
+            ("LEFTPADDING",   (0,0),(-1,-1),   5),
+            ("RIGHTPADDING",  (0,0),(-1,-1),   5),
         ]))
         elems.append(marks_tbl)
-        elems.append(Spacer(1, 4*mm))
+        elems.append(Spacer(1, 5*mm))
 
-        # Pass / Fail
+        # ── Pass / Fail ───────────────────────────────────────────────────────
         indiv_pass = True
         for abbr in subj_6:
             raw = exam_d.get(abbr, "")
@@ -257,51 +278,107 @@ def build_exam_pdf(school_name, faculty_name, exam_label, student_results,
             except:
                 indiv_pass = False
 
-        elems.append(Paragraph(
-            "✓   PASS" if indiv_pass else "✗   FAIL",
-            res_pass if indiv_pass else res_fail
-        ))
-        elems.append(Spacer(1, 6*mm))
-
-        # Signature line
-        sig = Table(
-            [["Class Teacher", "Principal"]],
-            colWidths=[SLIP_W * 0.5, SLIP_W * 0.5],
-        )
-        sig.setStyle(TableStyle([
-            ("FONTSIZE",    (0,0),(-1,-1), 9),
-            ("ALIGN",       (0,0),(-1,-1), "CENTER"),
-            ("LINEABOVE",   (0,0),(0,0),   0.7, colors.black),
-            ("LINEABOVE",   (1,0),(1,0),   0.7, colors.black),
-            ("TOPPADDING",  (0,0),(-1,-1), 14),
+        # Result in a shaded box
+        res_text  = "✓   PASS" if indiv_pass else "✗   FAIL"
+        res_fill  = colors.Color(0.85, 0.97, 0.85) if indiv_pass \
+                    else colors.Color(0.99, 0.87, 0.87)
+        res_border= colors.Color(0.05,0.55,0.05) if indiv_pass \
+                    else colors.Color(0.8,0.1,0.1)
+        res_tbl   = Table([[Paragraph(res_text,
+                                       res_pass if indiv_pass else res_fail)]],
+                          colWidths=[SLIP_W * 0.96])
+        res_tbl.setStyle(TableStyle([
+            ("BACKGROUND",    (0,0),(-1,-1), res_fill),
+            ("BOX",           (0,0),(-1,-1), 1.5, res_border),
+            ("BOTTOMPADDING", (0,0),(-1,-1), 8),
+            ("TOPPADDING",    (0,0),(-1,-1), 8),
+            ("ALIGN",         (0,0),(-1,-1), "CENTER"),
         ]))
-        elems.append(sig)
-        return elems
+        elems.append(res_tbl)
 
-    # ── Assemble: 2 slips per page side by side ───────────────────────────────
-    story = []
+        return elems, indiv_pass
+
+    # ── Canvas-based renderer so slips fill full page height ─────────────────
+    buf = BytesIO()
+    c   = rl_canvas.Canvas(buf, pagesize=PAGE)
+
+    def draw_slip_on_canvas(c, sr, x_offset):
+        """
+        Draw one slip inside a Frame at x_offset.
+        Top section fills normally; signature is pinned to the bottom.
+        """
+        SIG_H   = 18 * mm      # reserved height at bottom for signatures
+        INNER_H = SLIP_H - SIG_H
+
+        # Outer border box
+        c.setStrokeColor(colors.Color(0.12, 0.31, 0.49))
+        c.setLineWidth(1.5)
+        c.rect(x_offset, MARGIN, SLIP_W, SLIP_H, stroke=1, fill=0)
+
+        # ── Top content frame ─────────────────────────────────────────────────
+        top_elems, indiv_pass = slip_content(sr)
+
+        top_frame = Frame(
+            x_offset + 2*mm,
+            MARGIN + SIG_H,
+            SLIP_W - 4*mm,
+            INNER_H,
+            leftPadding=0, rightPadding=0,
+            topPadding=0,  bottomPadding=0,
+            showBoundary=0,
+        )
+        kif = KeepInFrame(SLIP_W - 4*mm, INNER_H, top_elems,
+                          mode='shrink')
+        top_frame.addFromList([kif], c)
+
+        # ── Divider line above signature ──────────────────────────────────────
+        sig_y = MARGIN + SIG_H
+        c.setStrokeColor(colors.Color(0.5, 0.5, 0.5))
+        c.setLineWidth(0.5)
+        c.line(x_offset + 3*mm, sig_y, x_offset + SLIP_W - 3*mm, sig_y)
+
+        # ── Signature labels pinned to bottom ─────────────────────────────────
+        c.setFont("Helvetica", 10)
+        c.setFillColor(colors.black)
+        quarter = SLIP_W / 4
+        # Left signature
+        sig_line_y = MARGIN + 12*mm
+        c.line(x_offset + quarter*0.3, sig_line_y,
+               x_offset + quarter*1.7, sig_line_y)
+        c.drawCentredString(x_offset + quarter,
+                            MARGIN + 4*mm, "Class Teacher")
+        # Right signature
+        c.line(x_offset + quarter*2.3, sig_line_y,
+               x_offset + quarter*3.7, sig_line_y)
+        c.drawCentredString(x_offset + quarter*3,
+                            MARGIN + 4*mm, "Principal")
+
     for i in range(0, len(student_results), 2):
-        left  = make_slip(student_results[i])
-        right = make_slip(student_results[i+1]) \
-                if i+1 < len(student_results) else [Spacer(1, 1)]
+        # Left slip
+        draw_slip_on_canvas(c, student_results[i], MARGIN)
 
-        page_tbl = Table(
-            [[left, right]],
-            colWidths=[SLIP_W - DIVIDER/2, SLIP_W - DIVIDER/2],
-        )
-        page_tbl.setStyle(TableStyle([
-            ("VALIGN",       (0,0),(-1,-1), "TOP"),
-            ("LINEAFTER",    (0,0),(0,-1),  1.0, colors.Color(0.7,0.7,0.7)),
-            ("LEFTPADDING",  (0,0),(-1,-1), 4),
-            ("RIGHTPADDING", (0,0),(-1,-1), 4),
-            ("TOPPADDING",   (0,0),(-1,-1), 0),
-            ("BOTTOMPADDING",(0,0),(-1,-1), 0),
-        ]))
-        story.append(page_tbl)
+        # Right slip (or blank box if odd number of students)
+        right_x = MARGIN + SLIP_W + GAP
+        if i + 1 < len(student_results):
+            draw_slip_on_canvas(c, student_results[i+1], right_x)
+        else:
+            # Empty right slot — just draw border
+            c.setStrokeColor(colors.Color(0.7, 0.7, 0.7))
+            c.setLineWidth(1)
+            c.rect(right_x, MARGIN, SLIP_W, SLIP_H, stroke=1, fill=0)
+
+        # Vertical cut line between slips
+        mid_x = MARGIN + SLIP_W + GAP / 2
+        c.setDash(4, 3)
+        c.setStrokeColor(colors.Color(0.6, 0.6, 0.6))
+        c.setLineWidth(0.5)
+        c.line(mid_x, MARGIN, mid_x, MARGIN + SLIP_H)
+        c.setDash()
+
         if i + 2 < len(student_results):
-            story.append(PageBreak())
+            c.showPage()
 
-    doc.build(story)
+    c.save()
     buf.seek(0)
     return buf
 
