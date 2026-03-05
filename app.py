@@ -116,204 +116,189 @@ def detect_student_subjects(faculty, df_row, cfg):
 def build_exam_pdf(school_name, faculty_name, exam_label, student_results,
                    cfg, pos_cols, selected_exam_data):
     """
-    Generates a PDF with 2 result slips per page.
-    selected_exam_data: dict { roll -> { abbr -> marks, Grand Total, %, Result } }
-    student_results: list of dicts with roll, name, subj_6, pass, rank, a100, gt, pc
-    exam_label: e.g. "FIRST UNIT TEST (25)"
+    Landscape A4, 2 result slips side by side per page.
+    Each slip is ~135mm wide — large, readable fonts suitable for printing.
     """
+    from reportlab.lib.pagesizes import landscape
 
-    # Exam metadata
     exam_meta = {
-        "FIRST UNIT TEST (25)":  {"max_per_sub": 25, "pass_mark": 9,  "total_max": 150},
-        "FIRST TERM EXAM (50)":  {"max_per_sub": 50, "pass_mark": 18, "total_max": 300},
-        "SECOND UNIT TEST (25)": {"max_per_sub": 25, "pass_mark": 9,  "total_max": 150},
-        "ANNUAL EXAM (70/80)":   {"max_per_sub": None, "pass_mark": 28, "total_max": None},
+        "FIRST UNIT TEST (25)":  {"max_per_sub": 25,  "pass_mark": 9,  "total_max": 150},
+        "FIRST TERM EXAM (50)":  {"max_per_sub": 50,  "pass_mark": 18, "total_max": 300},
+        "SECOND UNIT TEST (25)": {"max_per_sub": 25,  "pass_mark": 9,  "total_max": 150},
+        "ANNUAL EXAM (70/80)":   {"max_per_sub": None,"pass_mark": 28, "total_max": None},
     }
     meta = exam_meta.get(exam_label, {"max_per_sub": None, "pass_mark": None, "total_max": None})
 
+    PAGE      = landscape(A4)           # 297mm × 210mm
+    L_MARGIN  = 8*mm
+    R_MARGIN  = 8*mm
+    T_MARGIN  = 8*mm
+    B_MARGIN  = 8*mm
+    USABLE_W  = PAGE[0] - L_MARGIN - R_MARGIN   # ~281mm
+    SLIP_W    = USABLE_W / 2                     # ~140mm each
+    DIVIDER   = 4*mm                             # gap between slips
+
     buf = BytesIO()
     doc = SimpleDocTemplate(
-        buf, pagesize=A4,
-        leftMargin=10*mm, rightMargin=10*mm,
-        topMargin=10*mm,  bottomMargin=10*mm
+        buf, pagesize=PAGE,
+        leftMargin=L_MARGIN, rightMargin=R_MARGIN,
+        topMargin=T_MARGIN,  bottomMargin=B_MARGIN,
     )
 
-    styles = getSampleStyleSheet()
-    school_style  = ParagraphStyle("school",  fontSize=13, fontName="Helvetica-Bold",
-                                   alignment=TA_CENTER, spaceAfter=1)
-    exam_style    = ParagraphStyle("exam",    fontSize=10, fontName="Helvetica-Bold",
-                                   alignment=TA_CENTER, spaceAfter=1, textColor=colors.darkblue)
-    faculty_style = ParagraphStyle("faculty", fontSize=9,  fontName="Helvetica",
-                                   alignment=TA_CENTER, spaceAfter=4)
-    label_style   = ParagraphStyle("label",   fontSize=8,  fontName="Helvetica-Bold")
-    value_style   = ParagraphStyle("value",   fontSize=8,  fontName="Helvetica")
-    result_pass   = ParagraphStyle("rpass",   fontSize=11, fontName="Helvetica-Bold",
-                                   textColor=colors.green, alignment=TA_CENTER)
-    result_fail   = ParagraphStyle("rfail",   fontSize=11, fontName="Helvetica-Bold",
-                                   textColor=colors.red,   alignment=TA_CENTER)
-    sig_style     = ParagraphStyle("sig",     fontSize=7,  fontName="Helvetica",
-                                   alignment=TA_CENTER)
+    # ── Styles (larger since landscape gives us room) ─────────────────────────
+    school_style = ParagraphStyle("sch", fontSize=16, fontName="Helvetica-Bold",
+                                  alignment=TA_CENTER, spaceAfter=2,
+                                  textColor=colors.Color(0.12, 0.31, 0.49))
+    exam_style   = ParagraphStyle("exm", fontSize=12, fontName="Helvetica-Bold",
+                                  alignment=TA_CENTER, spaceAfter=2,
+                                  textColor=colors.Color(0.8, 0.2, 0.0))
+    fac_style    = ParagraphStyle("fac", fontSize=10, fontName="Helvetica",
+                                  alignment=TA_CENTER, spaceAfter=3)
+    lbl_style    = ParagraphStyle("lbl", fontSize=10, fontName="Helvetica-Bold")
+    val_style    = ParagraphStyle("val", fontSize=10, fontName="Helvetica")
+    res_pass     = ParagraphStyle("rp",  fontSize=14, fontName="Helvetica-Bold",
+                                  textColor=colors.green, alignment=TA_CENTER)
+    res_fail     = ParagraphStyle("rf",  fontSize=14, fontName="Helvetica-Bold",
+                                  textColor=colors.red,   alignment=TA_CENTER)
 
-    SLIP_W = 88*mm    # two slips side by side on A4 (190mm usable / 2)
+    # Subject col, Max col, Marks col widths inside each slip
+    S_COL = SLIP_W * 0.52
+    M_COL = SLIP_W * 0.24
+    O_COL = SLIP_W * 0.24
 
     def make_slip(sr):
-        roll    = sr["roll"]
-        name    = sr["name"]
-        subj_6  = sr["subj_6"]
-        exam_d  = selected_exam_data.get(roll, {})
+        roll   = sr["roll"]
+        name   = sr["name"]
+        subj_6 = sr["subj_6"]
+        exam_d = selected_exam_data.get(roll, {})
+        is_ann = (exam_label == "ANNUAL EXAM (70/80)")
+        elems  = []
 
-        elems = []
-
-        # ── Header ────────────────────────────────────────────────────────────
+        # Header
         elems.append(Paragraph(school_name, school_style))
-        elems.append(Paragraph(exam_label, exam_style))
-        elems.append(Paragraph(f"{faculty_name} Faculty", faculty_style))
-        elems.append(HRFlowable(width="100%", thickness=1, color=colors.darkblue))
-        elems.append(Spacer(1, 2*mm))
+        elems.append(Paragraph(exam_label,  exam_style))
+        elems.append(Paragraph(f"{faculty_name} Faculty", fac_style))
+        elems.append(HRFlowable(width="100%", thickness=1.5,
+                                color=colors.Color(0.12, 0.31, 0.49)))
+        elems.append(Spacer(1, 3*mm))
 
-        # Roll & Name
-        info_data = [
-            [Paragraph("Roll No.", label_style), Paragraph(str(roll), value_style),
-             Paragraph("Name", label_style),     Paragraph(str(name), value_style)],
-        ]
-        info_tbl = Table(info_data, colWidths=[18*mm, 18*mm, 14*mm, 38*mm])
-        info_tbl.setStyle(TableStyle([
-            ("FONTSIZE",    (0,0), (-1,-1), 8),
-            ("BOTTOMPADDING",(0,0),(-1,-1), 2),
-            ("TOPPADDING",  (0,0),(-1,-1), 2),
+        # Roll / Name row
+        info = Table(
+            [[Paragraph("Roll No. :", lbl_style), Paragraph(str(roll), val_style),
+              Paragraph("Name :", lbl_style),      Paragraph(str(name), val_style)]],
+            colWidths=[SLIP_W*0.18, SLIP_W*0.18, SLIP_W*0.14, SLIP_W*0.50],
+        )
+        info.setStyle(TableStyle([
+            ("BOTTOMPADDING", (0,0),(-1,-1), 3),
+            ("TOPPADDING",    (0,0),(-1,-1), 3),
+            ("FONTSIZE",      (0,0),(-1,-1), 10),
         ]))
-        elems.append(info_tbl)
-        elems.append(Spacer(1, 2*mm))
+        elems.append(info)
+        elems.append(Spacer(1, 3*mm))
 
-        # ── Marks table ───────────────────────────────────────────────────────
-        is_annual = (exam_label == "ANNUAL EXAM (70/80)")
-
-        tbl_header = ["Subject", "Max", "Marks"]
-        tbl_data   = [tbl_header]
-
-        total_obtained = 0
-        total_max_val  = 0
+        # Marks table
+        tbl_data      = [["Subject", "Max Marks", "Obtained"]]
+        total_obt     = 0
+        total_max_val = 0
 
         for abbr in subj_6:
             subj_name, ann_max, _ = cfg["subjects"][abbr]
-            if is_annual:
-                max_m = ann_max
-            else:
-                max_m = meta["max_per_sub"]
-
-            raw = exam_d.get(abbr, "")
+            max_m = ann_max if is_ann else meta["max_per_sub"]
+            raw   = exam_d.get(abbr, "")
             try:
-                obtained = int(float(raw)) if str(raw).strip().upper() != "AB" else "AB"
+                obt = int(float(raw)) if str(raw).strip().upper() != "AB" else "AB"
             except:
-                obtained = str(raw)
+                obt = str(raw)
+            if isinstance(obt, int):
+                total_obt     += obt
+                total_max_val += max_m
+            tbl_data.append([subj_name, str(max_m), str(obt)])
 
-            if isinstance(obtained, int):
-                total_obtained += obtained
-                total_max_val  += max_m
-
-            tbl_data.append([subj_name, str(max_m), str(obtained)])
-
-        # Totals row
         tbl_data.append(["TOTAL", str(total_max_val),
-                          str(total_obtained) if isinstance(total_obtained, int) else "-"])
+                          str(total_obt) if isinstance(total_obt, int) else "-"])
+        pct = round(total_obt / total_max_val * 100, 2) \
+              if isinstance(total_obt, int) and total_max_val else "-"
+        tbl_data.append(["Percentage", "", f"{pct} %" if pct != "-" else "-"])
 
-        # Percentage
-        if isinstance(total_obtained, int) and total_max_val:
-            pct = round(total_obtained / total_max_val * 100, 2)
-        else:
-            pct = "-"
-        tbl_data.append(["Percentage", "", f"{pct}%" if pct != "-" else "-"])
-
-        col_w = [50*mm, 18*mm, 18*mm]
-        marks_tbl = Table(tbl_data, colWidths=col_w)
+        n_rows = len(tbl_data)
+        marks_tbl = Table(tbl_data, colWidths=[S_COL, M_COL, O_COL])
         marks_tbl.setStyle(TableStyle([
-            # Header row
-            ("BACKGROUND",    (0, 0), (-1, 0),  colors.Color(0.12, 0.31, 0.49)),
-            ("TEXTCOLOR",     (0, 0), (-1, 0),  colors.white),
-            ("FONTNAME",      (0, 0), (-1, 0),  "Helvetica-Bold"),
-            ("FONTSIZE",      (0, 0), (-1,-1),  8),
-            ("ALIGN",         (1, 0), (-1,-1),  "CENTER"),
-            ("ALIGN",         (0, 0), (0, -1),  "LEFT"),
-            ("ROWBACKGROUNDS",(0, 1), (-1,-3),  [colors.white, colors.Color(0.93,0.95,0.98)]),
-            # Total row
-            ("BACKGROUND",    (0,-2), (-1,-2),  colors.Color(0.85, 0.85, 0.85)),
-            ("FONTNAME",      (0,-2), (-1,-2),  "Helvetica-Bold"),
-            # Percentage row
-            ("BACKGROUND",    (0,-1), (-1,-1),  colors.Color(0.93,0.95,0.98)),
-            ("SPAN",          (0,-1), (1,-1)),
-            ("FONTNAME",      (0,-1), (-1,-1),  "Helvetica-Bold"),
-            ("GRID",          (0, 0), (-1,-1),  0.5, colors.grey),
-            ("BOTTOMPADDING", (0, 0), (-1,-1),  3),
-            ("TOPPADDING",    (0, 0), (-1,-1),  3),
-            ("LEFTPADDING",   (0, 0), (-1,-1),  3),
+            ("BACKGROUND",    (0,0), (-1,0),    colors.Color(0.12,0.31,0.49)),
+            ("TEXTCOLOR",     (0,0), (-1,0),    colors.white),
+            ("FONTNAME",      (0,0), (-1,0),    "Helvetica-Bold"),
+            ("FONTSIZE",      (0,0), (-1,-1),   10),
+            ("ALIGN",         (1,0), (-1,-1),   "CENTER"),
+            ("ALIGN",         (0,0), (0,-1),    "LEFT"),
+            ("ROWBACKGROUNDS",(0,1), (-1,n_rows-3),
+                              [colors.white, colors.Color(0.94,0.96,0.99)]),
+            ("BACKGROUND",    (0,-2),(-1,-2),   colors.Color(0.82,0.82,0.82)),
+            ("FONTNAME",      (0,-2),(-1,-2),   "Helvetica-Bold"),
+            ("BACKGROUND",    (0,-1),(-1,-1),   colors.Color(0.94,0.96,0.99)),
+            ("SPAN",          (0,-1),(1,-1)),
+            ("FONTNAME",      (0,-1),(-1,-1),   "Helvetica-Bold"),
+            ("GRID",          (0,0), (-1,-1),   0.5, colors.grey),
+            ("BOTTOMPADDING", (0,0), (-1,-1),   4),
+            ("TOPPADDING",    (0,0), (-1,-1),   4),
+            ("LEFTPADDING",   (0,0), (-1,-1),   4),
         ]))
         elems.append(marks_tbl)
-        elems.append(Spacer(1, 3*mm))
+        elems.append(Spacer(1, 4*mm))
 
-        # ── Result banner ─────────────────────────────────────────────────────
-        # For individual exams: pass if all subjects >= pass_mark
-        if is_annual:
-            pm = 28   # for 80-mark subjects; 25 for 70 — shown as reference
-            pass_marks = [meta["pass_mark"]]
-        else:
-            pm = meta["pass_mark"]
-
+        # Pass / Fail
         indiv_pass = True
         for abbr in subj_6:
             raw = exam_d.get(abbr, "")
             try:
-                m = float(raw)
-                if is_annual:
-                    _, ann_max, _ = cfg["subjects"][abbr]
-                    req = 28 if ann_max == 80 else 25
-                else:
-                    req = pm
+                m   = float(raw)
+                req = (28 if cfg["subjects"][abbr][1] == 80 else 25) \
+                      if is_ann else meta["pass_mark"]
                 if m < req:
-                    indiv_pass = False
-                    break
+                    indiv_pass = False; break
             except:
                 indiv_pass = False
 
-        result_text = "✓  PASS" if indiv_pass else "✗  FAIL"
-        elems.append(Paragraph(result_text,
-                                result_pass if indiv_pass else result_fail))
-        elems.append(Spacer(1, 4*mm))
+        elems.append(Paragraph(
+            "✓   PASS" if indiv_pass else "✗   FAIL",
+            res_pass if indiv_pass else res_fail
+        ))
+        elems.append(Spacer(1, 6*mm))
 
-        # ── Signature line ────────────────────────────────────────────────────
-        sig_data = [["Class Teacher", "Principal"]]
-        sig_tbl  = Table(sig_data, colWidths=[44*mm, 44*mm])
-        sig_tbl.setStyle(TableStyle([
-            ("FONTSIZE",     (0,0),(-1,-1), 7),
-            ("ALIGN",        (0,0),(-1,-1), "CENTER"),
-            ("LINEABOVE",    (0,0),(0,0),   0.5, colors.black),
-            ("LINEABOVE",    (1,0),(1,0),   0.5, colors.black),
-            ("TOPPADDING",   (0,0),(-1,-1), 10),
+        # Signature line
+        sig = Table(
+            [["Class Teacher", "Principal"]],
+            colWidths=[SLIP_W * 0.5, SLIP_W * 0.5],
+        )
+        sig.setStyle(TableStyle([
+            ("FONTSIZE",    (0,0),(-1,-1), 9),
+            ("ALIGN",       (0,0),(-1,-1), "CENTER"),
+            ("LINEABOVE",   (0,0),(0,0),   0.7, colors.black),
+            ("LINEABOVE",   (1,0),(1,0),   0.7, colors.black),
+            ("TOPPADDING",  (0,0),(-1,-1), 14),
         ]))
-        elems.append(sig_tbl)
-
+        elems.append(sig)
         return elems
 
-    # ── Assemble page: 2 slips side by side using a 2-col Table ──────────────
+    # ── Assemble: 2 slips per page side by side ───────────────────────────────
     story = []
-    sr_list = student_results  # all students
+    for i in range(0, len(student_results), 2):
+        left  = make_slip(student_results[i])
+        right = make_slip(student_results[i+1]) \
+                if i+1 < len(student_results) else [Spacer(1, 1)]
 
-    for i in range(0, len(sr_list), 2):
-        left_elems  = make_slip(sr_list[i])
-        right_elems = make_slip(sr_list[i+1]) if i+1 < len(sr_list) else [Spacer(1,1)]
-
-        # Wrap each slip in a sub-table for side-by-side layout
         page_tbl = Table(
-            [[left_elems, right_elems]],
-            colWidths=[95*mm, 95*mm]
+            [[left, right]],
+            colWidths=[SLIP_W - DIVIDER/2, SLIP_W - DIVIDER/2],
         )
         page_tbl.setStyle(TableStyle([
-            ("VALIGN",      (0,0),(-1,-1), "TOP"),
-            ("LINEAFTER",   (0,0),(0,0),   0.5, colors.grey),
-            ("LEFTPADDING", (0,0),(-1,-1), 3),
-            ("RIGHTPADDING",(0,0),(-1,-1), 3),
+            ("VALIGN",       (0,0),(-1,-1), "TOP"),
+            ("LINEAFTER",    (0,0),(0,-1),  1.0, colors.Color(0.7,0.7,0.7)),
+            ("LEFTPADDING",  (0,0),(-1,-1), 4),
+            ("RIGHTPADDING", (0,0),(-1,-1), 4),
+            ("TOPPADDING",   (0,0),(-1,-1), 0),
+            ("BOTTOMPADDING",(0,0),(-1,-1), 0),
         ]))
         story.append(page_tbl)
-        if i + 2 < len(sr_list):
+        if i + 2 < len(student_results):
             story.append(PageBreak())
 
     doc.build(story)
