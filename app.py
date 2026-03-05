@@ -543,36 +543,31 @@ if uploaded_file:
                 subj_6 = all_students[roll]["subjects"]
                 block  = edited_df.iloc[s_idx*7 : s_idx*7+7].copy().reset_index(drop=True)
 
-                # Rows 0-4: UT1, FT, UT2, Annual, Internal
                 raw = {}
                 for row_i in range(5):
                     raw[row_i] = {pc: clean_marks(block.at[row_i, pc]) for pc in pos_cols}
 
-                # Total out of 200 per subject position
                 t200 = {pc: sum(raw[r][pc] for r in range(5)) for pc in pos_cols}
-
-                # Average out of 100
                 a100 = {pc: custom_round(t200[pc] / 2) for pc in pos_cols}
-
-                gt  = sum(a100.values())
-                pc_ = round((gt / 600) * 100, 2)
-                isp = all(a100[pc] >= 35 for pc in pos_cols)
+                gt   = sum(a100.values())
+                pc_  = round((gt / 600) * 100, 2)
+                isp  = all(a100[pc] >= 35 for pc in pos_cols)
 
                 student_results.append({
-                    "roll":    roll,
-                    "name":    all_students[roll]["Name"],
-                    "subj_6":  subj_6,
-                    "t200":    t200,
-                    "a100":    a100,
-                    "gt":      gt,
-                    "pc":      pc_,
-                    "pass":    isp,
-                    "rank":    "",
+                    "roll":   roll,
+                    "name":   all_students[roll]["Name"],
+                    "subj_6": subj_6,
+                    "t200":   t200,
+                    "a100":   a100,
+                    "gt":     gt,
+                    "pc":     pc_,
+                    "pass":   isp,
+                    "rank":   "",
                 })
 
             # Dense rank — PASS students only
-            pass_gts  = sorted(set(sr["gt"] for sr in student_results if sr["pass"]), reverse=True)
-            rank_map  = {gt_val: r+1 for r, gt_val in enumerate(pass_gts)}
+            pass_gts = sorted(set(sr["gt"] for sr in student_results if sr["pass"]), reverse=True)
+            rank_map = {gt_val: r+1 for r, gt_val in enumerate(pass_gts)}
             for sr in student_results:
                 sr["rank"] = rank_map[sr["gt"]] if sr["pass"] else ""
 
@@ -591,7 +586,25 @@ if uploaded_file:
 
             final_df = pd.concat(processed).reset_index(drop=True)
 
-            # Summary
+            # ── Save everything to session_state so PDF section persists ──────
+            st.session_state.report_ready       = True
+            st.session_state.student_results    = student_results
+            st.session_state.final_df           = final_df
+            st.session_state.all_students_snap  = all_students   # snapshot for PDF
+            st.session_state.faculty_snap       = faculty
+            st.session_state.cfg_snap           = cfg
+            st.session_state.pos_cols_snap      = pos_cols
+            st.session_state.exam_configs_snap  = exam_configs
+            st.session_state.xl_sheet_names     = xl.sheet_names
+            st.session_state.display_subj_snap  = display_subj
+
+        # ── Show report if already generated ──────────────────────────────────
+        if st.session_state.get("report_ready"):
+            student_results = st.session_state.student_results
+            final_df        = st.session_state.final_df
+            cfg_s           = st.session_state.cfg_snap
+            display_subj_s  = st.session_state.display_subj_snap
+
             passed = sum(1 for sr in student_results if sr["pass"])
             st.success(f"✅ {passed} PASS  |  {len(student_results)-passed} FAIL")
 
@@ -599,7 +612,6 @@ if uploaded_file:
             for sr in student_results:
                 row_s = {"Roll No.": sr["roll"], "Name": sr["name"]}
                 for i, abbr in enumerate(sr["subj_6"]):
-                    _, _, _ = cfg["subjects"][abbr]
                     row_s[f"{abbr} /100"] = sr["a100"][pos_cols[i]]
                 row_s["Grand Total"] = sr["gt"]
                 row_s["%"]           = sr["pc"]
@@ -620,7 +632,6 @@ if uploaded_file:
             ws_h.cell(row=1, column=1, value="GT")
             ws_h.cell(row=1, column=2, value="IsPass")
 
-            # Styles
             hdr_font = Font(name="Arial", bold=True, size=11, color="FFFFFF")
             hdr_fill = PatternFill("solid", start_color="1F4E79")
             cat_fill = {
@@ -638,18 +649,16 @@ if uploaded_file:
             )
             ctr = Alignment(horizontal="center", vertical="center")
 
-            # Headers — use display subject names
             col_headers = (
                 ["Roll No.", "Student Name", "Exam Type"]
-                + [cfg["subjects"][a][0] if a in cfg["subjects"] else a
-                   for a in display_subj]
+                + [cfg_s["subjects"][a][0] if a in cfg_s["subjects"] else a
+                   for a in display_subj_s]
                 + result_cols
             )
             for ci, h in enumerate(col_headers, 1):
                 c = ws.cell(row=1, column=ci, value=h)
                 c.font=hdr_font; c.fill=hdr_fill; c.alignment=ctr; c.border=thin
 
-            # Column widths
             ws.column_dimensions["A"].width = 10
             ws.column_dimensions["B"].width = 22
             ws.column_dimensions["C"].width = 28
@@ -658,23 +667,21 @@ if uploaded_file:
             for i in range(len(result_cols)):
                 ws.column_dimensions[get_column_letter(10+i)].width = 13
 
-            SUB_S = 4               # col D = Sub1
-            GT_C  = SUB_S + 6      # col J = Grand Total
-            PCT_C = GT_C  + 1      # col K = %
-            RES_C = PCT_C + 1      # col L = Result
-            REM_C = RES_C + 1      # col M = Remark
-            RNK_C = REM_C + 1      # col N = Rank
+            SUB_S = 4
+            GT_C  = SUB_S + 6
+            PCT_C = GT_C  + 1
+            RES_C = PCT_C + 1
+            REM_C = RES_C + 1
+            RNK_C = REM_C + 1
 
             sub_lets = [get_column_letter(SUB_S + i) for i in range(6)]
             gt_let   = get_column_letter(GT_C)
             res_let  = get_column_letter(RES_C)
-
-            n        = len(student_rolls)
+            n        = len(student_results)
             h_gt_rng = f"_RankHelper!$A$2:$A${n+1}"
-
             avg_excel_rows = []
 
-            for s_idx, roll in enumerate(student_rolls):
+            for s_idx, roll in enumerate([sr["roll"] for sr in student_results]):
                 sr   = student_results[s_idx]
                 brow = 2 + s_idx * 7
 
@@ -704,42 +711,30 @@ if uploaded_file:
                                         value=f"=ROUND({sl}{trow}/2,0)")
                             c.fill=fl; c.border=thin; c.alignment=ctr
                             c.font=Font(name="Arial", bold=True)
-
-                        # Grand Total
                         c = ws.cell(row=erow, column=GT_C,
                                     value=f"=SUM({sub_lets[0]}{erow}:{sub_lets[-1]}{erow})")
                         c.fill=fl; c.border=thin; c.alignment=ctr
                         c.font=Font(name="Arial", bold=True, color="1F4E79")
-
-                        # %
                         c = ws.cell(row=erow, column=PCT_C,
                                     value=f"=ROUND({gt_let}{erow}/600*100,2)")
                         c.fill=fl; c.border=thin; c.alignment=ctr
-
-                        # Result
                         pass_chk = ",".join([f"{sl}{erow}>=35" for sl in sub_lets])
                         c = ws.cell(row=erow, column=RES_C,
                                     value=f'=IF(AND({pass_chk}),"PASS","FAIL")')
                         c.fill=fl; c.border=thin; c.alignment=ctr
                         c.font=Font(name="Arial", bold=True)
-
                         ws.cell(row=erow, column=REM_C, value="").border = thin
-
                         c = ws.cell(row=erow, column=RNK_C, value="")
                         c.fill=fl; c.border=thin; c.alignment=ctr
                         c.font=Font(name="Arial", bold=True, color="C00000")
-
-                        # Helper sheet
                         h_row = s_idx + 2
                         ws_h.cell(row=h_row, column=1,
                                   value=f"=Consolidated!{gt_let}{erow}")
                         ws_h.cell(row=h_row, column=2,
                                   value=f'=IF(Consolidated!{res_let}{erow}="PASS",1,0)')
-
                         avg_excel_rows.append((erow, h_row))
 
                     else:
-                        # Write values from final_df
                         frow = final_df.iloc[s_idx*7 + cat_idx]
                         for i, pc in enumerate(pos_cols):
                             v = frow.get(pc, "")
@@ -747,19 +742,16 @@ if uploaded_file:
                             except: pass
                             c = ws.cell(row=erow, column=SUB_S+i, value=v)
                             c.fill=fl; c.border=thin; c.alignment=ctr
-
                         for ri, rc in enumerate(result_cols):
                             v = "" if rc == "Rank" else frow.get(rc, "")
                             c = ws.cell(row=erow, column=GT_C+ri, value=v)
                             c.fill=fl; c.border=thin; c.alignment=ctr
 
-                    # Style left 3 cols
                     for ci in [1, 2, 3]:
                         c = ws.cell(row=erow, column=ci)
                         c.fill=fl; c.border=thin
                         c.font=Font(name="Arial", bold=(ci == 2 and cat_idx == 0))
 
-            # ── RANK formulas ──────────────────────────────────────────────────
             for (erow, h_row) in avg_excel_rows:
                 rank_formula = (
                     f"=IF(_RankHelper!$B${h_row}=1,"
@@ -771,7 +763,6 @@ if uploaded_file:
                 c.font=Font(name="Arial", bold=True, color="C00000")
 
             ws.freeze_panes = "A2"
-
             output = BytesIO()
             wb.save(output)
             output.seek(0)
@@ -783,66 +774,81 @@ if uploaded_file:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
-            # ── PDF Result Slips ───────────────────────────────────────────────
+        # ── PDF Result Slips — ALWAYS visible once report is generated ─────────
+        if st.session_state.get("report_ready"):
+            student_results = st.session_state.student_results
+            all_students_s  = st.session_state.all_students_snap
+            faculty_s       = st.session_state.faculty_snap
+            cfg_s           = st.session_state.cfg_snap
+            pos_cols_s      = st.session_state.pos_cols_snap
+            exam_configs_s  = st.session_state.exam_configs_snap
+            sheet_names_s   = st.session_state.xl_sheet_names
+
             st.markdown("---")
             st.subheader("📄 Generate Exam-wise Result Slip PDFs")
 
             school_name = st.text_input(
                 "🏫 School / College Name",
-                value="Your School Name",
-                help="This appears at the top of every result slip"
+                value=st.session_state.get("school_name_input", "Your School Name"),
+                key="school_name_input",
+                help="This appears at the top of every result slip",
             )
 
-            exam_options = [ec["label"] for ec in exam_configs
-                            if any(s.strip().upper() in ec["sheets"]
-                                   for s in xl.sheet_names)]
+            exam_options = [
+                ec["label"] for ec in exam_configs_s
+                if any(s.strip().upper() in ec["sheets"] for s in sheet_names_s)
+            ]
             sel_exams = st.multiselect(
                 "Select Exam(s) to generate PDFs for",
                 options=exam_options,
                 default=exam_options,
+                key="sel_exams_pdf",
             )
 
-            if st.button("📄 Generate PDF Result Slips"):
+            if st.button("📄 Generate PDF Result Slips", key="gen_pdf_btn"):
                 if not sel_exams:
                     st.warning("Please select at least one exam.")
                 else:
-                    pdf_tabs = st.tabs(sel_exams)
-                    for tab, exam_label in zip(pdf_tabs, sel_exams):
-                        with tab:
-                            # Build exam_data dict for this exam
-                            exam_data_for_pdf = {}
-                            for sr in student_results:
-                                roll   = sr["roll"]
-                                s_data = all_students[roll]
-                                subj_6 = sr["subj_6"]
-                                ed     = s_data["Exams"].get(exam_label, {})
-                                exam_data_for_pdf[roll] = {
-                                    abbr: ed.get(abbr, "") for abbr in subj_6
-                                }
-                                exam_data_for_pdf[roll]["Grand Total"] = ed.get("Grand Total", "")
-                                exam_data_for_pdf[roll]["%"]           = ed.get("%", "")
-                                exam_data_for_pdf[roll]["Result"]      = ed.get("Result", "")
+                    st.session_state.pdf_results = {}
+                    for exam_label in sel_exams:
+                        exam_data_for_pdf = {}
+                        for sr in student_results:
+                            roll   = sr["roll"]
+                            subj_6 = sr["subj_6"]
+                            ed     = all_students_s[roll]["Exams"].get(exam_label, {})
+                            exam_data_for_pdf[roll] = {abbr: ed.get(abbr, "") for abbr in subj_6}
+                            exam_data_for_pdf[roll]["Grand Total"] = ed.get("Grand Total", "")
+                            exam_data_for_pdf[roll]["%"]           = ed.get("%", "")
+                            exam_data_for_pdf[roll]["Result"]      = ed.get("Result", "")
 
-                            pdf_buf = build_exam_pdf(
-                                school_name   = school_name,
-                                faculty_name  = faculty,
-                                exam_label    = exam_label,
-                                student_results = student_results,
-                                cfg           = cfg,
-                                pos_cols      = pos_cols,
-                                selected_exam_data = exam_data_for_pdf,
-                            )
+                        pdf_buf = build_exam_pdf(
+                            school_name        = school_name,
+                            faculty_name       = faculty_s,
+                            exam_label         = exam_label,
+                            student_results    = student_results,
+                            cfg                = cfg_s,
+                            pos_cols           = pos_cols_s,
+                            selected_exam_data = exam_data_for_pdf,
+                        )
+                        st.session_state.pdf_results[exam_label] = pdf_buf.getvalue()
 
-                            safe_name = exam_label.replace("/", "-").replace(" ", "_")
-                            st.download_button(
-                                label=f"📥 Download PDF — {exam_label}",
-                                data=pdf_buf.getvalue(),
-                                file_name=f"Results_{safe_name}.pdf",
-                                mime="application/pdf",
-                                key=f"pdf_{safe_name}",
-                            )
-                            st.success(f"✅ PDF ready for {exam_label} — {len(student_results)} students, "
-                                       f"{-(-len(student_results)//2)} pages")
+            # Show download buttons for all generated PDFs
+            if st.session_state.get("pdf_results"):
+                st.markdown("#### 📥 Download PDFs")
+                cols = st.columns(len(st.session_state.pdf_results))
+                for col, (exam_label, pdf_bytes) in zip(
+                    cols, st.session_state.pdf_results.items()
+                ):
+                    safe_name = exam_label.replace("/", "-").replace(" ", "_")
+                    n_students = len(student_results)
+                    col.download_button(
+                        label=f"📥 {exam_label}",
+                        data=pdf_bytes,
+                        file_name=f"Results_{safe_name}.pdf",
+                        mime="application/pdf",
+                        key=f"dl_pdf_{safe_name}",
+                    )
+                    col.caption(f"{n_students} students · {-(-n_students//2)} pages")
 
     except Exception as e:
         st.error(f"Error: {e}")
