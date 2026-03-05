@@ -152,8 +152,9 @@ def build_exam_pdf(school_name, faculty_name, exam_label, student_results,
     ROW_H    = 9 * mm
 
     # ── Styles ────────────────────────────────────────────────────────────────
-    school_style = ParagraphStyle("sch", fontSize=17, fontName="Helvetica-Bold",
-                                  alignment=TA_CENTER, spaceAfter=1,
+    school_style = ParagraphStyle("sch", fontSize=13, fontName="Helvetica-Bold",
+                                  alignment=TA_CENTER, spaceAfter=3,
+                                  leading=17, wordWrap="LTR",
                                   textColor=colors.Color(0.12, 0.31, 0.49))
     exam_style   = ParagraphStyle("exm", fontSize=13, fontName="Helvetica-Bold",
                                   alignment=TA_CENTER, spaceAfter=1,
