@@ -162,12 +162,22 @@ def build_exam_pdf(school_name, faculty_name, exam_label, student_results,
         "ANNUAL EXAM (70/80)":   "ANNUAL EXAM RESULT",
     }.get(exam_label, exam_label)
 
-    PAGE     = landscape(A4)          # (841.9, 595.3) points  ≈ 297×210 mm
+    PAGE     = landscape(A4)          # 841.9 × 595.3 pts  ≈ 297×210 mm
     PW, PH   = PAGE
-    MARGIN   = 10 * mm
-    GAP      = 6  * mm               # divider gap between the two slips
-    SLIP_W   = (PW - 2*MARGIN - GAP) / 2
-    SLIP_H   = PH - 2*MARGIN         # FULL usable height
+
+    # ── Symmetric layout ──────────────────────────────────────────────────────
+    # Each half of the page is exactly PW/2 wide.
+    # Inside each half we apply equal inner padding on BOTH sides so that
+    # after cutting down the centre line every slip has identical margins.
+    HALF_W   = PW / 2               # 148.5 mm — each half of the page
+    OUTER_M  = 8  * mm              # top / bottom / outer-edge margin
+    INNER_M  = 8  * mm              # margin from cut line  (= same as outer)
+    SLIP_W   = HALF_W - OUTER_M - INNER_M   # usable slip width inside each half
+    SLIP_H   = PH - 2 * OUTER_M             # usable slip height
+
+    # x-offsets for the left and right slip content boxes
+    LEFT_X   = OUTER_M             # left slip starts at outer margin
+    RIGHT_X  = HALF_W + INNER_M   # right slip starts inner_margin past centre
 
     # Row heights for the marks table — tall rows for readability
     ROW_H    = 9 * mm
@@ -335,14 +345,14 @@ def build_exam_pdf(school_name, faculty_name, exam_label, student_results,
         # Outer border box
         c.setStrokeColor(colors.Color(0.12, 0.31, 0.49))
         c.setLineWidth(1.5)
-        c.rect(x_offset, MARGIN, SLIP_W, SLIP_H, stroke=1, fill=0)
+        c.rect(x_offset, OUTER_M, SLIP_W, SLIP_H, stroke=1, fill=0)
 
         # ── Top content frame ─────────────────────────────────────────────────
         top_elems, indiv_pass = slip_content(sr)
 
         top_frame = Frame(
             x_offset + 2*mm,
-            MARGIN + SIG_H,
+            OUTER_M + SIG_H,
             SLIP_W - 4*mm,
             INNER_H,
             leftPadding=0, rightPadding=0,
@@ -354,7 +364,7 @@ def build_exam_pdf(school_name, faculty_name, exam_label, student_results,
         top_frame.addFromList([kif], c)
 
         # ── Divider line above signature ──────────────────────────────────────
-        sig_y = MARGIN + SIG_H
+        sig_y = OUTER_M + SIG_H
         c.setStrokeColor(colors.Color(0.5, 0.5, 0.5))
         c.setLineWidth(0.5)
         c.line(x_offset + 3*mm, sig_y, x_offset + SLIP_W - 3*mm, sig_y)
@@ -363,39 +373,40 @@ def build_exam_pdf(school_name, faculty_name, exam_label, student_results,
         c.setFont("Helvetica", 10)
         c.setFillColor(colors.black)
         quarter = SLIP_W / 4
-        # Left signature
-        sig_line_y = MARGIN + 12*mm
+        sig_line_y = OUTER_M + 12*mm
         c.line(x_offset + quarter*0.3, sig_line_y,
                x_offset + quarter*1.7, sig_line_y)
         c.drawCentredString(x_offset + quarter,
-                            MARGIN + 4*mm, "Class Teacher")
-        # Right signature
+                            OUTER_M + 4*mm, "Class Teacher")
         c.line(x_offset + quarter*2.3, sig_line_y,
                x_offset + quarter*3.7, sig_line_y)
         c.drawCentredString(x_offset + quarter*3,
-                            MARGIN + 4*mm, "Principal")
+                            OUTER_M + 4*mm, "Principal")
 
     for i in range(0, len(student_results), 2):
         # Left slip
-        draw_slip_on_canvas(c, student_results[i], MARGIN)
+        draw_slip_on_canvas(c, student_results[i], LEFT_X)
 
-        # Right slip (or blank box if odd number of students)
-        right_x = MARGIN + SLIP_W + GAP
+        # Right slip
         if i + 1 < len(student_results):
-            draw_slip_on_canvas(c, student_results[i+1], right_x)
+            draw_slip_on_canvas(c, student_results[i+1], RIGHT_X)
         else:
-            # Empty right slot — just draw border
             c.setStrokeColor(colors.Color(0.7, 0.7, 0.7))
             c.setLineWidth(1)
-            c.rect(right_x, MARGIN, SLIP_W, SLIP_H, stroke=1, fill=0)
+            c.rect(RIGHT_X, OUTER_M, SLIP_W, SLIP_H, stroke=1, fill=0)
 
-        # Vertical cut line between slips
-        mid_x = MARGIN + SLIP_W + GAP / 2
-        c.setDash(4, 3)
-        c.setStrokeColor(colors.Color(0.6, 0.6, 0.6))
-        c.setLineWidth(0.5)
-        c.line(mid_x, MARGIN, mid_x, MARGIN + SLIP_H)
+        # Dashed cut line exactly at centre of page
+        mid_x = PW / 2
+        c.setDash(5, 3)
+        c.setStrokeColor(colors.Color(0.5, 0.5, 0.5))
+        c.setLineWidth(0.6)
+        c.line(mid_x, OUTER_M, mid_x, OUTER_M + SLIP_H)
         c.setDash()
+
+        # Scissor symbol at top of cut line
+        c.setFont("Helvetica", 9)
+        c.setFillColor(colors.Color(0.5, 0.5, 0.5))
+        c.drawCentredString(mid_x, OUTER_M + SLIP_H + 1*mm, "✂")
 
         if i + 2 < len(student_results):
             c.showPage()
