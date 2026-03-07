@@ -538,10 +538,16 @@ if uploaded_file:
                 for roll in student_rolls
             }
 
-        # Header row
+        # Header row — Roll, Name, then subject names for the 6 columns
+        # Use the first student's subject list to build headers
+        # (core subjects are same for all; optional may differ per student)
+        first_subj_6 = all_students[student_rolls[0]]["subjects"]
         hdr = st.columns([0.6, 1.8] + [0.9]*6)
         hdr[0].markdown("**Roll**")
         hdr[1].markdown("**Name**")
+        for i, abbr in enumerate(first_subj_6):
+            subj_name, _, im = cfg["subjects"][abbr]
+            hdr[i+2].markdown(f"**{subj_name}**  \n`/{im}`")
 
         for roll in student_rolls:
             subj_6 = all_students[roll]["subjects"]
