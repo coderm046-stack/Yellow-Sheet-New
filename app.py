@@ -527,10 +527,32 @@ if uploaded_file:
         ]
         result_cols = ["Grand Total", "%", "Result", "Remark", "Rank"]
 
+        # ── Build master subject column list across ALL students ──────────────
+        # Core subjects always appear. Both optional variants (e.g. SOC + VOC,
+        # or BIO + MATH) are shown as separate columns if any student has them.
+        # Students who didn't take a particular optional get a blank disabled cell.
+
+        core_abbrs = cfg["core"]   # e.g. ["ENG","MAR","GEO","PSY","ECO"]
+        opt_abbrs  = cfg["optional"]  # e.g. ["SOC","VOC"] or []
+
+        # Find which optional subjects actually appear in uploaded data
+        used_opts = []
+        for o in opt_abbrs:
+            if any(o in all_students[r]["subjects"] for r in student_rolls):
+                used_opts.append(o)
+
+        # Master column list = core + all used optionals (may be 6 or 7)
+        all_cols = core_abbrs + used_opts   # e.g. 5 core + 2 opts = 7 cols
+        n_cols   = len(all_cols)            # 6 or 7
+
         # ── Internal Marks Input ───────────────────────────────────────────────
         st.markdown("---")
         st.subheader("📝 Enter Internal / Practical Marks")
-        st.info("Enter marks for each student. Subject columns match each student's chosen optional subject.")
+        st.info(
+            "Each column shows the subject name and maximum internal marks. "
+            "Columns for optional subjects (e.g. Sociology / Vocational) are shown "
+            "separately — a student's row will be blank for the optional they did not take."
+        )
 
         if "internal_marks" not in st.session_state:
             st.session_state.internal_marks = {
@@ -538,33 +560,45 @@ if uploaded_file:
                 for roll in student_rolls
             }
 
-        # Header row — Roll, Name, then subject names for the 6 columns
-        # Use the first student's subject list to build headers
-        # (core subjects are same for all; optional may differ per student)
-        first_subj_6 = all_students[student_rolls[0]]["subjects"]
-        hdr = st.columns([0.6, 1.8] + [0.9]*6)
+        # ── Header row ────────────────────────────────────────────────────────
+        col_widths = [0.5, 1.6] + [0.85] * n_cols
+        hdr = st.columns(col_widths)
         hdr[0].markdown("**Roll**")
         hdr[1].markdown("**Name**")
-        for i, abbr in enumerate(first_subj_6):
+        for i, abbr in enumerate(all_cols):
             subj_name, _, im = cfg["subjects"][abbr]
-            hdr[i+2].markdown(f"**{subj_name}**  \n`/{im}`")
+            tag = " 🔵" if abbr in opt_abbrs else ""
+            hdr[i+2].markdown(f"**{subj_name}**{tag}  \n`/{im}`")
 
+        # ── Student rows ──────────────────────────────────────────────────────
         for roll in student_rolls:
-            subj_6 = all_students[roll]["subjects"]
-            name   = all_students[roll]["Name"]
-            cols   = st.columns([0.6, 1.8] + [0.9]*6)
+            student_subj = all_students[roll]["subjects"]  # this student's 6
+            name         = all_students[roll]["Name"]
+            cols         = st.columns(col_widths)
             cols[0].write(roll)
             cols[1].write(name)
-            for i, abbr in enumerate(subj_6):
-                _, am, im = cfg["subjects"][abbr]
-                val = cols[i+2].text_input(
-                    label=f"{roll}-{abbr}",
-                    value=st.session_state.internal_marks[roll].get(abbr, "0"),
-                    key=f"int_{roll}_{abbr}",
-                    label_visibility="collapsed",
-                    placeholder=f"{abbr} /{im}",
-                )
-                st.session_state.internal_marks[roll][abbr] = val
+
+            for i, abbr in enumerate(all_cols):
+                if abbr in student_subj:
+                    # This student takes this subject — show input box
+                    _, _, im = cfg["subjects"][abbr]
+                    val = cols[i+2].text_input(
+                        label=f"{roll}-{abbr}",
+                        value=st.session_state.internal_marks[roll].get(abbr, "0"),
+                        key=f"int_{roll}_{abbr}",
+                        label_visibility="collapsed",
+                        placeholder=f"{abbr} /{im}",
+                    )
+                    st.session_state.internal_marks[roll][abbr] = val
+                else:
+                    # Student didn't take this optional — show disabled placeholder
+                    cols[i+2].text_input(
+                        label=f"{roll}-{abbr}-na",
+                        value="—",
+                        key=f"int_{roll}_{abbr}_na",
+                        label_visibility="collapsed",
+                        disabled=True,
+                    )
 
         # ── Build base_df (one universal subject slot per position) ────────────
         # Since different students may have different optional subjects,
