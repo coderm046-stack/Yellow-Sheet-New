@@ -216,22 +216,14 @@ def build_exam_pdf(faculty_name, exam_label, student_results,
         elems  = []
 
         # ── Header block — letterhead image ───────────────────────────────────
-        import base64, tempfile, os as _os
         from reportlab.platypus import Image as RLImage
 
-        # Decode letterhead to a temp PNG file for ReportLab to read
-        lh_bytes = base64.b64decode(LETTERHEAD_B64)
-        lh_tmp   = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-        lh_tmp.write(lh_bytes)
-        lh_tmp.close()
-
         # Scale letterhead to full slip width, preserving aspect ratio
-        # Original image is 2000×521px → ratio ≈ 3.84
+        # Original image is 2000×521px → ratio ≈ 0.2605
         LH_W = SLIP_W
         LH_H = LH_W * (521 / 2000)
         elems.append(Spacer(1, 2*mm))
-        elems.append(RLImage(lh_tmp.name, width=LH_W, height=LH_H))
-        _os.unlink(lh_tmp.name)   # clean up temp file
+        elems.append(RLImage(_lh_path, width=LH_W, height=LH_H))
 
         elems.append(Spacer(1, 1*mm))
         elems.append(Paragraph(exam_display_title, exam_style))
@@ -346,6 +338,15 @@ def build_exam_pdf(faculty_name, exam_label, student_results,
         return elems, indiv_pass
 
     # ── Canvas-based renderer so slips fill full page height ─────────────────
+    # ── Write letterhead image to a temp file that persists for entire build ──
+    import base64 as _b64, tempfile as _tmp, os as _os
+    _lh_bytes = _b64.b64decode(LETTERHEAD_B64)
+    _lh_tmp   = _tmp.NamedTemporaryFile(suffix=".png", delete=False)
+    _lh_tmp.write(_lh_bytes)
+    _lh_tmp.flush()
+    _lh_tmp.close()
+    _lh_path  = _lh_tmp.name
+
     buf = BytesIO()
     c   = rl_canvas.Canvas(buf, pagesize=PAGE)
 
@@ -427,6 +428,7 @@ def build_exam_pdf(faculty_name, exam_label, student_results,
             c.showPage()
 
     c.save()
+    _os.unlink(_lh_path)   # clean up letterhead temp file
     buf.seek(0)
     return buf
 
