@@ -600,74 +600,69 @@ if uploaded_file:
                         disabled=True,
                     )
 
-        # ── Build base_df (one universal subject slot per position) ────────────
-        # Since different students may have different optional subjects,
-        # we use positional column names Sub1-Sub6 for the dataframe
-        # but store actual abbr names in subject headers for display
+        # ── Master subject column list (same as used in internal marks grid) ──
+        # core + all optional variants that actually appear in the data
+        used_opts_data = []
+        for o in cfg["optional"]:
+            if any(o in all_students[r]["subjects"] for r in student_rolls):
+                used_opts_data.append(o)
+        master_cols = cfg["core"] + used_opts_data   # e.g. 7 for Arts with both opts
 
-        # Determine display subject headers — use most common subject set
-        # (since all students in one faculty have same core, only optional differs)
-        display_subj = cfg["core"] + [cfg["optional"][0]] if cfg["optional"] else cfg["core"]
+        # pos_cols kept for backwards compat with session_state key
+        pos_cols = master_cols   # abbr names ARE the column keys now
 
-        pos_cols  = [f"Sub{i+1}" for i in range(6)]   # positional df columns
+        # ── Build base_df keyed by subject abbr (not positional Sub1-Sub6) ────
         base_rows = []
-
         for roll in student_rolls:
             s      = all_students[roll]
-            subj_6 = s["subjects"]
+            subj_6 = s["subjects"]   # this student's actual 6
 
             for cat in categories:
                 row_data = {
                     "Roll No.": roll if cat == "FIRST UNIT TEST (25)" else "",
                     "Column1":  s["Name"] if cat == "FIRST UNIT TEST (25)" else "",
                     "Column2":  cat,
-                    "_subjects": "|".join(subj_6),   # hidden metadata
                 }
-                for pos, pc in enumerate(pos_cols):
-                    row_data[pc] = ""
+                # All master cols default to ""
+                for abbr in master_cols:
+                    row_data[abbr] = ""
                 for rc in result_cols:
                     row_data[rc] = ""
 
                 if cat in s["Exams"]:
                     exam_marks = s["Exams"][cat]
-                    for pos, abbr in enumerate(subj_6):
-                        row_data[pos_cols[pos]] = str(exam_marks.get(abbr, ""))
+                    for abbr in subj_6:
+                        row_data[abbr] = str(exam_marks.get(abbr, ""))
                     row_data["Grand Total"] = exam_marks.get("Grand Total", "")
                     row_data["%"]           = exam_marks.get("%", "")
                     row_data["Result"]      = exam_marks.get("Result", "")
 
                 elif cat == "INT/PRACTICAL (20/30)":
-                    for pos, abbr in enumerate(subj_6):
-                        row_data[pos_cols[pos]] = st.session_state.internal_marks[roll].get(abbr, "0")
+                    for abbr in subj_6:
+                        row_data[abbr] = st.session_state.internal_marks[roll].get(abbr, "0")
 
                 base_rows.append(row_data)
 
         base_df = pd.DataFrame(base_rows)
-        for col in base_df.columns:
-            if col != "_subjects":
-                base_df[col] = base_df[col].astype(str).replace("nan", "")
+        base_df = base_df.fillna("").astype(str)
+        base_df = base_df.replace("nan", "")
 
         # Inject latest internal marks
         for i, roll in enumerate(student_rolls):
             subj_6 = all_students[roll]["subjects"]
-            for pos, abbr in enumerate(subj_6):
-                base_df.at[i*7 + 4, pos_cols[pos]] = \
+            for abbr in subj_6:
+                base_df.at[i*7 + 4, abbr] = \
                     st.session_state.internal_marks[roll].get(abbr, "0")
 
-        # Display with actual subject names as column headers
+        # Display — rename abbrs to full subject names for readability
         st.markdown("---")
         st.subheader("📊 Marks Preview & Edit")
-
-        display_df = base_df.drop(columns=["_subjects"]).copy()
-        # Rename Sub1-Sub6 to actual subject names for display
-        rename_map = {pos_cols[i]: display_subj[i] if i < len(display_subj) else pos_cols[i]
-                      for i in range(6)}
-        display_df = display_df.rename(columns=rename_map)
+        rename_map = {abbr: cfg["subjects"][abbr][0] for abbr in master_cols
+                      if abbr in cfg["subjects"]}
+        display_df    = base_df.rename(columns=rename_map)
         edited_display = st.data_editor(display_df, hide_index=True, use_container_width=True)
-
-        # Map edited values back to positional columns
-        rev_rename = {v: k for k, v in rename_map.items()}
-        edited_df  = edited_display.rename(columns=rev_rename)
+        rev_rename     = {v: k for k, v in rename_map.items()}
+        edited_df      = edited_display.rename(columns=rev_rename)
 
         # ── Generate Report ────────────────────────────────────────────────────
         if st.button("🚀 Generate Final Report & Rank"):
@@ -678,15 +673,17 @@ if uploaded_file:
                 subj_6 = all_students[roll]["subjects"]
                 block  = edited_df.iloc[s_idx*7 : s_idx*7+7].copy().reset_index(drop=True)
 
+                # Only sum this student's actual 6 subjects
                 raw = {}
                 for row_i in range(5):
-                    raw[row_i] = {pc: clean_marks(block.at[row_i, pc]) for pc in pos_cols}
+                    raw[row_i] = {abbr: clean_marks(block.at[row_i, abbr])
+                                  for abbr in subj_6}
 
-                t200 = {pc: sum(raw[r][pc] for r in range(5)) for pc in pos_cols}
-                a100 = {pc: custom_round(t200[pc] / 2) for pc in pos_cols}
+                t200 = {abbr: sum(raw[r][abbr] for r in range(5)) for abbr in subj_6}
+                a100 = {abbr: custom_round(t200[abbr] / 2)         for abbr in subj_6}
                 gt   = sum(a100.values())
                 pc_  = round((gt / 600) * 100, 2)
-                isp  = all(a100[pc] >= 35 for pc in pos_cols)
+                isp  = all(a100[abbr] >= 35 for abbr in subj_6)
 
                 student_results.append({
                     "roll":   roll,
@@ -706,13 +703,14 @@ if uploaded_file:
             for sr in student_results:
                 sr["rank"] = rank_map[sr["gt"]] if sr["pass"] else ""
 
-            # Rebuild final_df
+            # Rebuild final_df with abbr-keyed columns
             processed = []
             for s_idx, sr in enumerate(student_results):
-                block = edited_df.iloc[s_idx*7 : s_idx*7+7].copy().reset_index(drop=True)
-                for pc in pos_cols:
-                    block.at[5, pc] = str(int(sr["t200"][pc]))
-                    block.at[6, pc] = str(int(sr["a100"][pc]))
+                block  = edited_df.iloc[s_idx*7 : s_idx*7+7].copy().reset_index(drop=True)
+                subj_6 = sr["subj_6"]
+                for abbr in subj_6:
+                    block.at[5, abbr] = str(int(sr["t200"][abbr]))
+                    block.at[6, abbr] = str(int(sr["a100"][abbr]))
                 block.at[6, "Grand Total"] = str(sr["gt"])
                 block.at[6, "%"]           = str(sr["pc"])
                 block.at[6, "Result"]      = "PASS" if sr["pass"] else "FAIL"
@@ -721,33 +719,40 @@ if uploaded_file:
 
             final_df = pd.concat(processed).reset_index(drop=True)
 
-            # ── Save everything to session_state so PDF section persists ──────
+            # ── Save to session_state ──────────────────────────────────────────
             st.session_state.report_ready       = True
             st.session_state.student_results    = student_results
             st.session_state.final_df           = final_df
-            st.session_state.all_students_snap  = all_students   # snapshot for PDF
+            st.session_state.all_students_snap  = all_students
             st.session_state.faculty_snap       = faculty
             st.session_state.cfg_snap           = cfg
-            st.session_state.pos_cols_snap      = pos_cols
+            st.session_state.pos_cols_snap      = master_cols   # abbr list
+            st.session_state.master_cols_snap   = master_cols
             st.session_state.exam_configs_snap  = exam_configs
             st.session_state.xl_sheet_names     = xl.sheet_names
-            st.session_state.display_subj_snap  = display_subj
+            st.session_state.display_subj_snap  = master_cols   # kept for compat
 
         # ── Show report if already generated ──────────────────────────────────
         if st.session_state.get("report_ready"):
-            student_results = st.session_state.student_results
-            final_df        = st.session_state.final_df
-            cfg_s           = st.session_state.cfg_snap
-            display_subj_s  = st.session_state.display_subj_snap
+            student_results  = st.session_state.student_results
+            final_df         = st.session_state.final_df
+            cfg_s            = st.session_state.cfg_snap
+            master_cols_snap = st.session_state.get("master_cols_snap",
+                               st.session_state.get("display_subj_snap", master_cols))
 
             passed = sum(1 for sr in student_results if sr["pass"])
             st.success(f"✅ {passed} PASS  |  {len(student_results)-passed} FAIL")
 
+            # Summary table — each student shows only their own 6 subjects
+            # but we use master_cols for consistent column ordering
             summary_rows = []
             for sr in student_results:
                 row_s = {"Roll No.": sr["roll"], "Name": sr["name"]}
-                for i, abbr in enumerate(sr["subj_6"]):
-                    row_s[f"{abbr} /100"] = sr["a100"][pos_cols[i]]
+                for abbr in master_cols_snap:
+                    if abbr in sr["a100"]:
+                        row_s[f"{abbr} /100"] = sr["a100"][abbr]
+                    else:
+                        row_s[f"{abbr} /100"] = "—"   # didn't take this optional
                 row_s["Grand Total"] = sr["gt"]
                 row_s["%"]           = sr["pc"]
                 row_s["Result"]      = "PASS" if sr["pass"] else "FAIL"
@@ -758,6 +763,8 @@ if uploaded_file:
             st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
 
             # ── Build Excel ────────────────────────────────────────────────────
+            n_sub = len(master_cols_snap)   # 6 or 7
+
             wb   = Workbook()
             ws   = wb.active
             ws.title = "Consolidated"
@@ -787,7 +794,7 @@ if uploaded_file:
             col_headers = (
                 ["Roll No.", "Student Name", "Exam Type"]
                 + [cfg_s["subjects"][a][0] if a in cfg_s["subjects"] else a
-                   for a in display_subj_s]
+                   for a in master_cols_snap]
                 + result_cols
             )
             for ci, h in enumerate(col_headers, 1):
@@ -797,28 +804,37 @@ if uploaded_file:
             ws.column_dimensions["A"].width = 10
             ws.column_dimensions["B"].width = 22
             ws.column_dimensions["C"].width = 28
-            for i in range(6):
+            for i in range(n_sub):
                 ws.column_dimensions[get_column_letter(4+i)].width = 11
             for i in range(len(result_cols)):
-                ws.column_dimensions[get_column_letter(10+i)].width = 13
+                ws.column_dimensions[get_column_letter(4+n_sub+i)].width = 13
 
             SUB_S = 4
-            GT_C  = SUB_S + 6
+            GT_C  = SUB_S + n_sub
             PCT_C = GT_C  + 1
             RES_C = PCT_C + 1
             REM_C = RES_C + 1
             RNK_C = REM_C + 1
 
-            sub_lets = [get_column_letter(SUB_S + i) for i in range(6)]
-            gt_let   = get_column_letter(GT_C)
-            res_let  = get_column_letter(RES_C)
-            n        = len(student_results)
+            # For Excel SUM/ROUND formulas we only use the 6 cols the student
+            # actually sat — blank cells for the non-taken optional are skipped.
+            # Each student's subj_6 maps to exact column letters.
+            gt_let  = get_column_letter(GT_C)
+            res_let = get_column_letter(RES_C)
+            n       = len(student_results)
             h_gt_rng = f"_RankHelper!$A$2:$A${n+1}"
             avg_excel_rows = []
 
-            for s_idx, roll in enumerate([sr["roll"] for sr in student_results]):
-                sr   = student_results[s_idx]
-                brow = 2 + s_idx * 7
+            for s_idx, sr in enumerate(student_results):
+                roll   = sr["roll"]
+                subj_6 = sr["subj_6"]
+                brow   = 2 + s_idx * 7
+
+                # Column letters for THIS student's 6 subjects
+                sub_lets_student = [
+                    get_column_letter(SUB_S + master_cols_snap.index(abbr))
+                    for abbr in subj_6
+                ]
 
                 for cat_idx, cat in enumerate(categories):
                     erow = brow + cat_idx
@@ -830,38 +846,54 @@ if uploaded_file:
 
                     if cat == "Total Marks Out of 200":
                         r1, r5 = brow, brow + 4
-                        for i, sl in enumerate(sub_lets):
-                            c = ws.cell(row=erow, column=SUB_S+i,
-                                        value=f"=SUM({sl}{r1}:{sl}{r5})")
+                        # All master cols — blank for non-taken optional
+                        for i, abbr in enumerate(master_cols_snap):
+                            sl = get_column_letter(SUB_S + i)
+                            if abbr in subj_6:
+                                c = ws.cell(row=erow, column=SUB_S+i,
+                                            value=f"=SUM({sl}{r1}:{sl}{r5})")
+                                c.font=Font(name="Arial", bold=True)
+                            else:
+                                c = ws.cell(row=erow, column=SUB_S+i, value="")
                             c.fill=fl; c.border=thin; c.alignment=ctr
-                            c.font=Font(name="Arial", bold=True)
                         for ri in range(len(result_cols)):
                             c = ws.cell(row=erow, column=GT_C+ri, value="")
                             c.fill=fl; c.border=thin
 
                     elif cat == "Average Marks 200/2=100":
                         trow = erow - 1
-                        for i, sl in enumerate(sub_lets):
-                            c = ws.cell(row=erow, column=SUB_S+i,
-                                        value=f"=ROUND({sl}{trow}/2,0)")
+                        for i, abbr in enumerate(master_cols_snap):
+                            sl = get_column_letter(SUB_S + i)
+                            if abbr in subj_6:
+                                c = ws.cell(row=erow, column=SUB_S+i,
+                                            value=f"=ROUND({sl}{trow}/2,0)")
+                                c.font=Font(name="Arial", bold=True)
+                            else:
+                                c = ws.cell(row=erow, column=SUB_S+i, value="")
                             c.fill=fl; c.border=thin; c.alignment=ctr
-                            c.font=Font(name="Arial", bold=True)
-                        c = ws.cell(row=erow, column=GT_C,
-                                    value=f"=SUM({sub_lets[0]}{erow}:{sub_lets[-1]}{erow})")
+
+                        # Grand Total = sum of only taken subjects
+                        gt_formula = "=SUM(" + ",".join(
+                            f"{sl}{erow}" for sl in sub_lets_student) + ")"
+                        c = ws.cell(row=erow, column=GT_C, value=gt_formula)
                         c.fill=fl; c.border=thin; c.alignment=ctr
                         c.font=Font(name="Arial", bold=True, color="1F4E79")
+
                         c = ws.cell(row=erow, column=PCT_C,
                                     value=f"=ROUND({gt_let}{erow}/600*100,2)")
                         c.fill=fl; c.border=thin; c.alignment=ctr
-                        pass_chk = ",".join([f"{sl}{erow}>=35" for sl in sub_lets])
+
+                        pass_chk = ",".join([f"{sl}{erow}>=35" for sl in sub_lets_student])
                         c = ws.cell(row=erow, column=RES_C,
                                     value=f'=IF(AND({pass_chk}),"PASS","FAIL")')
                         c.fill=fl; c.border=thin; c.alignment=ctr
                         c.font=Font(name="Arial", bold=True)
+
                         ws.cell(row=erow, column=REM_C, value="").border = thin
                         c = ws.cell(row=erow, column=RNK_C, value="")
                         c.fill=fl; c.border=thin; c.alignment=ctr
                         c.font=Font(name="Arial", bold=True, color="C00000")
+
                         h_row = s_idx + 2
                         ws_h.cell(row=h_row, column=1,
                                   value=f"=Consolidated!{gt_let}{erow}")
@@ -870,9 +902,10 @@ if uploaded_file:
                         avg_excel_rows.append((erow, h_row))
 
                     else:
+                        # Raw exam rows — write values per abbr
                         frow = final_df.iloc[s_idx*7 + cat_idx]
-                        for i, pc in enumerate(pos_cols):
-                            v = frow.get(pc, "")
+                        for i, abbr in enumerate(master_cols_snap):
+                            v = frow.get(abbr, "") if abbr in subj_6 else ""
                             try: v = float(v)
                             except: pass
                             c = ws.cell(row=erow, column=SUB_S+i, value=v)
